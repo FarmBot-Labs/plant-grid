@@ -1,80 +1,63 @@
 #!/usr/bin/env python
 """Plant Grid Farmware"""
 
-import os
-import json
-import base64
 import numpy as np
-import requests
-
-def log(message, message_type):
-    'Send a message to the log.'
-    log_message = '[plant-grid] ' + str(message)
-    headers = {
-        'Authorization': 'bearer {}'.format(os.environ['FARMWARE_TOKEN']),
-        'content-type': "application/json"}
-    payload = json.dumps(
-        {"kind": "send_message",
-            "args": {"message": log_message, "message_type": message_type}})
-    requests.post(os.environ['FARMWARE_URL'] + 'api/v1/celery_script',
-                    data=payload, headers=headers)
-
-def get_env(key, type_=int):
-    'Return the value of the namespaced Farmware input variable.'
-    return type_(os.environ['{}_{}'.format(farmware_name, key)])
+from farmware_tools import get_config_value, app
+from farmware_tools.device import log
 
 class Grid():
     'Add a grid of plants to the farm designer.'
-    def __init__(self):
-        API_TOKEN = os.environ['API_TOKEN']
-        self.headers = {'Authorization': 'Bearer {}'.format(API_TOKEN),
-                        'content-type': "application/json"}
-        encoded_payload = API_TOKEN.split('.')[1]
-        encoded_payload += '=' * (4 - len(encoded_payload) % 4)
-        json_payload = base64.b64decode(encoded_payload).decode('utf-8')
-        server = json.loads(json_payload)['iss']
-        self.api_url = 'http{}:{}/api/'.format(
-            's' if not any([h in server for h in ['localhost', '192.168.']])
-            else '', server)
-
-    def add_plant(self, x, y):
-        'Add a plant through the FarmBot Web App API.'
-        plant = {'x': str(x), 'y': str(y),
-                 'radius': str(radius),
-                 'name': name, 'pointer_type': 'Plant', 'openfarm_slug': slug}
-        payload = json.dumps(plant)
-        r = requests.post(self.api_url + 'points',
-                          data=payload, headers=self.headers)
+    def __init__(self, configs):
+        self.x_num = configs['x_num']
+        self.y_num = configs['y_num']
+        self.x_step = configs['x_step']
+        self.y_step = configs['y_step']
+        self.x_start = configs['x_start']
+        self.y_start = configs['y_start']
+        self.radius = configs['radius']
+        self.name = configs['name']
+        self.slug = configs['slug']
+        self.grid_values = self.create_grid()
 
     def create_grid(self):
         'Create a coordinate grid based on the input options.'
-        unit_grid = np.mgrid[0:x_num, 0:y_num]
+        unit_grid = np.mgrid[0:self.x_num, 0:self.y_num]
         plant_grid = unit_grid
-        plant_grid[0] = x_start + unit_grid[0] * x_step
-        plant_grid[1] = y_start + unit_grid[1] * y_step
-        xs, ys = np.vstack(map(np.ravel, plant_grid))
-        return xs, ys
+        plant_grid[0] = self.x_start + unit_grid[0] * self.x_step
+        plant_grid[1] = self.y_start + unit_grid[1] * self.y_step
+        x_values, y_values = np.vstack(list(map(np.ravel, plant_grid)))
+        self.x_uniq = sorted(list(set(x_values)))
+        self.y_uniq = sorted(list(set(y_values)))
+        grid_values = [{'x': int(x), 'y': int(y)} for x, y in zip(x_values, y_values)]
+        return grid_values
+
+    def print_coordinates(self):
+        'Print a representation of the grid coordinates.'
+        fmt = '{:^6}'
+        print(fmt.format('') + ''.join([fmt.format(x) for x in self.x_uniq]))
+        for y_value in self.y_uniq:
+            print(fmt.format(y_value) + fmt.format('*') * len(self.x_uniq))
 
     def add_plants(self):
         'Add all plants in the grid to the farm designer.'
-        X, Y = self.create_grid()
-        for i in range(len(X)):
-            self.add_plant(X[i], Y[i])
-        log('{} plants added, starting at ({}, {}).'.format(len(X), X[0], Y[0]),
+        for plant in self.grid_values:
+            app.add_plant(plant['x'], plant['y'], radius=self.radius,
+                          openfarm_slug=self.slug, name=self.name)
+        log('{} {} plants added, starting at ({}, {}).'.format(
+            len(self.grid_values), self.slug, self.x_start, self.y_start),
             'success')
 
+INT_CONFIG_KEYS = [
+    'x_num', 'y_num', 'x_step', 'y_step', 'x_start', 'y_start', 'radius'
+    ]
+
 if __name__ == '__main__':
-    farmware_name = 'plant_grid'
-    # Load inputs from Farmware page widget specified in manifest file
-    x_num = get_env('y_num')
-    y_num = get_env('y_num')
-    x_step = get_env('x_step')
-    y_step = get_env('y_step')
-    x_start = get_env('x_start')
-    y_start = get_env('y_start')
-    radius = get_env('radius')
-    name = get_env('name', str)
-    slug = get_env('slug', str)
-    
-    grid = Grid()
-    grid.add_plants()
+    FARMWARE_NAME = 'Plant Grid'
+    # Load inputs from Farmware page specified in manifest file
+    CONFIGS = {key: get_config_value(FARMWARE_NAME, key) for key in INT_CONFIG_KEYS}
+    CONFIGS['name'] = get_config_value(FARMWARE_NAME, 'name', str)
+    CONFIGS['slug'] = get_config_value(FARMWARE_NAME, 'slug', str)
+
+    GRID = Grid(CONFIGS)
+    #GRID.print_coordinates()
+    GRID.add_plants()
